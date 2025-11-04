@@ -2701,7 +2701,7 @@ class AlgorithmSelectorCache(PersistentCache):
         return_multi_template=False,
         best_config_future=None,
     ):
-        from .codegen.cuda.cuda_kernel import CUDATemplateCaller
+        from .codegen.cutlass.cuda_kernel import CUDATemplateCaller
 
         # Run preprocessing functions on choices
         for preprocessing_fn in self.preprocessing_fns:
@@ -3123,7 +3123,7 @@ class AlgorithmSelectorCache(PersistentCache):
                         "select_algorithm_num_precompilation_exceptions"
                     ] += 1
                     exceptions.append((futures[future], e))
-                    from torch._inductor.codegen.cuda.cuda_kernel import (
+                    from torch._inductor.codegen.cutlass.cuda_kernel import (
                         CUDATemplateCaller,
                     )
 
@@ -3310,7 +3310,9 @@ class AlgorithmSelectorCache(PersistentCache):
             try:
                 timing = cls.benchmark_choice(choice, autotune_args)
             except CUDACompileError:
-                from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
+                from torch._inductor.codegen.cutlass.cuda_kernel import (
+                    CUDATemplateCaller,
+                )
 
                 if not isinstance(choice, CUDATemplateCaller):
                     log.exception(
@@ -3321,7 +3323,9 @@ class AlgorithmSelectorCache(PersistentCache):
                 log.warning("Not yet implemented", exc_info=True)
                 timing = float("inf")
             except RuntimeError as e:
-                from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
+                from torch._inductor.codegen.cutlass.cuda_kernel import (
+                    CUDATemplateCaller,
+                )
 
                 msg = str(e)
                 if "invalid argument" in msg:
@@ -3466,7 +3470,7 @@ class AlgorithmSelectorCache(PersistentCache):
             return prescreen_winners
 
         # prescreen cutlass
-        from .codegen.cuda.cuda_kernel import CUDATemplateCaller
+        from .codegen.cutlass.cuda_kernel import CUDATemplateCaller
 
         candidates = []
         if (
@@ -3500,7 +3504,7 @@ class AlgorithmSelectorCache(PersistentCache):
         """
         Prune the choices after prescreening.
         """
-        from .codegen.cuda.cuda_kernel import CUDATemplateCaller
+        from .codegen.cutlass.cuda_kernel import CUDATemplateCaller
 
         prescreen_key = f"{name}:{inputs_key}"
 
