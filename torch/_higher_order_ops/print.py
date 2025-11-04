@@ -3,6 +3,14 @@ import builtins
 import torch
 import torch.utils._pytree as pytree
 from torch._ops import HigherOrderOperator
+from torch.fx.experimental.proxy_tensor import (
+    disable_proxy_modes_tracing,
+    get_proxy_slot,
+    ProxyTorchDispatchMode,
+    track_tensor_tree,
+)
+
+from typing import Any, cast
 
 
 class Print(HigherOrderOperator):
@@ -25,6 +33,32 @@ class Print(HigherOrderOperator):
 
 print = Print()
 
+
+def trace_print(proxy_mode, func_overload, format_str, **kwargs):
+    def _unwrap_proxy(e):
+        if not isinstance(e, (torch.Tensor, torch.SymInt, torch.SymFloat)):
+            return e
+        return get_proxy_slot(
+            cast(torch.Tensor, e),
+            proxy_mode.tracer,
+            e,
+            lambda e: e.proxy,  # type: ignore[attr-defined]
+        )
+
+    if not isinstance(format_str, str):
+        raise ValueError("print's first argument must be a string")
+
+    node_args = (format_str, kwargs)
+    proxy_args = pytree.tree_map(_unwrap_proxy, node_args)
+    return proxy_mode.tracer.create_proxy(
+        "call_function", func_overload, proxy_args, {}, name="print"
+    )
+
+@print.py_impl(ProxyTorchDispatchMode)
+# pyre-ignore
+def print_proxy_torch_dispatch_mode(mode, format_str, **kwargs):
+    res = trace_print(mode, print, format_str, **kwargs)
+    return res
 
 @print.py_impl(torch._C.DispatchKey.CompositeExplicitAutograd)
 # pyre-ignore
