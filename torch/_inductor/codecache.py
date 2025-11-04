@@ -2336,9 +2336,13 @@ end
                     f.write(json.dumps(qual_name_to_id))
                 generated_files.append(constants_config_json)
 
-            gpu_codecache: ROCmCodeCache | CUDACodeCache = (
-                ROCmCodeCache() if torch.version.hip else CUDACodeCache()
-            )
+            cache_cls = {
+                "xpu": XPUCodeCache,
+                "rocm": ROCmCodeCache,
+                "cuda": CUDACodeCache,
+            }["rocm" if torch.version.hip else device_type]
+            gpu_codecache = cache_cls()
+
             gpu_kernels_o = gpu_codecache.aot_kernels_o.copy()
             # clear the list of aot kernels after each linking
             gpu_codecache.aot_kernels_o.clear()
@@ -3796,6 +3800,7 @@ class CUTLASSCodeCache:
     def cache_clear() -> None:
         CUTLASSCodeCache.cache.clear()
         CUTLASSCodeCache.aot_kernels_o.clear()
+        CUTLASSCodeCache.write.cache_clear()
 
     @staticmethod
     @lru_cache(maxsize=4)
@@ -4077,6 +4082,48 @@ class CUDACodeCache(CUTLASSCodeCache):
                 cuda_compile_utils._nvcc_compiler_options(),
                 # flags
                 cuda_compile_utils._nvcc_host_compiler_options(),
+                # cutlass key
+                cutlass_key(),
+                # hack to deal with AOTI .o compilation
+            ]
+        )
+        return extra
+
+
+from torch._inductor.codegen.xpu import compile_utils as xpu_compile_utils
+
+
+@clear_on_fresh_cache
+class XPUCodeCache(CUTLASSCodeCache):
+    _SOURCE_CODE_SUFFIX = "cpp"
+    _BACKEND = "XPU"
+
+    @classmethod
+    def _use_re_build(cls) -> bool:
+        return False
+
+    @classmethod
+    def _compile_command(
+        cls,
+        src_files: list[str],
+        dst_file: str,
+        dst_file_ext: str,
+        extra_args: Optional[list[str]] = None,
+    ) -> str:
+        return xpu_compile_utils.xpu_compile_command(
+            src_files, dst_file, dst_file_ext, extra_args=extra_args
+        )
+
+    @classmethod
+    def _source_code_extra(cls) -> str:
+        extra = repr(
+            [
+                # nvcc and cuda hash
+                xpu_compile_utils._sycl_compiler(),
+                # cutlass flags and gcc hash
+                xpu_compile_utils._sycl_compiler_options(),
+                # flags
+                xpu_compile_utils._sycl_host_compiler_options(),
                 # cutlass key
                 cutlass_key(),
                 # hack to deal with AOTI .o compilation
