@@ -8,15 +8,22 @@ from ..utils import try_import_cutlass
 if try_import_cutlass():
     import enum
 
+    from cutlass_library.arch_constants import (  # noqa: F401, F403
+        INTEL_XE_ARCH_MAX,
+        INTEL_XE_ARCH_MIN,
+    )
     from cutlass_library.gemm_operation import *  # noqa: F401, F403
     from cutlass_library.library import *  # noqa: F401, F403
 
     _LOGGER = logging.getLogger(__name__)
 
+    def is_xpu_arch(arch: int) -> bool:
+        return INTEL_XE_ARCH_MIN <= arch and arch <= INTEL_XE_ARCH_MAX
+
     class EmitGemmUniversal3xInstanceWithEVT:
         """Responsible for emitting a CUTLASS 3.x template definition"""
 
-        def __init__(self, operation_suffix="", evt_name=None):
+        def __init__(self, operation_suffix="", evt_name=None, device_type="cuda"):
             self.operation_suffix = operation_suffix
             self.includes = [
                 "cutlass/cutlass.h",
@@ -32,7 +39,6 @@ if try_import_cutlass():
             ${element_c},
             ${element_epilogue}
             >"""
-
             self.evt_name = evt_name
             self.gemm_template = """
 using ${operation_name}_epilogue =
@@ -175,6 +181,8 @@ ${compile_guard_end}
                     f"cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(\
 sizeof(typename {str(operation.procedural_name())}_epilogue::SharedStorage))>"
                 )
+            if is_xpu_arch(operation.arch):
+                stage_count_string = "cutlass::gemm::collective::StageCountAuto"
 
             epi_tile_mn = "cutlass::epilogue::collective::EpilogueTileAuto"
 
@@ -350,6 +358,11 @@ cute::Layout<cute::Shape<int,int,int>, {operation_name_str}_StrideNarrow>{{}}));
             if self.evt_name:
                 epilogue_functor = self.evt_name
 
+            arch = (
+                "cutlass::arch::IntelXe"
+                if is_xpu_arch(operation.arch)
+                else f"cutlass::arch::Sm{operation.arch}"
+            )
             values = {
                 "operation_name": operation_name_str,
                 "operation_suffix": self.operation_suffix,
@@ -369,7 +382,7 @@ cute::Layout<cute::Shape<int,int,int>, {operation_name_str}_StrideNarrow>{{}}));
                 "element_accumulator": DataTypeTag[operation.accumulator_type()],
                 "opcode_class_main": OpcodeClassTag[opcode_class_main],
                 "opcode_class_epi": OpcodeClassTag[opcode_class_epi],
-                "arch": f"cutlass::arch::Sm{operation.arch}",
+                "arch": arch,
                 "tile_shape_m": str(tile_shape_m),
                 "tile_shape_n": str(tile_shape_n),
                 "tile_shape_k": str(tile_shape_k),

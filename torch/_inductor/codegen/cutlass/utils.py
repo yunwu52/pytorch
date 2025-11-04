@@ -21,7 +21,7 @@ from ... import config
 from ...ir import Layout
 from ...runtime.runtime_utils import cache_dir
 from ...virtualized import V
-from ..cuda.cuda_env import get_cuda_arch, get_cuda_version
+from ..common import get_device_op_overrides
 
 
 log = logging.getLogger(__name__)
@@ -175,7 +175,10 @@ def try_import_cutlass() -> bool:
 
 
 @functools.lru_cache(8)
-def _normalize_cuda_arch(arch: str) -> str:
+def _normalize_cutlass_arch(arch: str) -> str:
+    if arch.startswith("Xe"):
+        return arch[2:]
+
     if int(arch) >= 100:
         log.warning(
             "Detected CUDA architecture >= 100: %s. We will generate operations with "
@@ -205,7 +208,7 @@ class CUTLASSArgs:
     """
 
     architectures: Optional[str] = None
-    cuda_version: Optional[str] = None
+    toolkit_version: Optional[str] = None
     instantiation_level: Optional[str] = None
     operations: Optional[str] = None
 
@@ -223,11 +226,11 @@ class CUTLASSArgs:
     disable_full_archs_compilation = False
 
     def __post_init__(self):
-        if self.architectures is None or self.cuda_version is None:
+        if self.architectures is None or self.toolkit_version is None:
             raise RuntimeError(
-                f"{self.architectures=} or {self.cuda_version=} is None!"
+                f"{self.architectures=} or {self.toolkit_version=} is None!"
             )
-        self.architectures = _normalize_cuda_arch(self.architectures)
+        self.architectures = _normalize_cutlass_arch(self.architectures)
 
 
 @clear_on_fresh_cache
@@ -249,25 +252,34 @@ def _gen_ops_cached(arch, version) -> dict[Any, Any]:
             version,
         )
         return {}
-    arch = _normalize_cuda_arch(arch)
+    is_xpu = arch.startswith("Xe")
+    arch = _normalize_cutlass_arch(arch)
     instantiation_level: str = config.cutlass.cutlass_instantiation_level
     args = CUTLASSArgs(
         architectures=arch,
-        cuda_version=version,
+        toolkit_version=version,
         instantiation_level=instantiation_level,
         operations=CUTLASS_OPERATION_KIND,
     )
     manifest = cutlass_manifest.Manifest(args)
 
     start_time = time.time()
+    if is_xpu:
+        if hasattr(cutlass_generator, "GenerateIntelXe"):
+            cutlass_generator.GenerateIntelXe(manifest, args.toolkit_version, arch=arch)
+        else:
+            raise NotImplementedError(
+                "Arch " + arch + " is not supported by current cutlass lib."
+            )
+
     if arch == "100":
         if hasattr(cutlass_generator, "GenerateSM100"):
-            cutlass_generator.GenerateSM100(manifest, args.cuda_version)
-        cutlass_generator.GenerateSM90(manifest, args.cuda_version)
+            cutlass_generator.GenerateSM100(manifest, args.toolkit_version)
+        cutlass_generator.GenerateSM90(manifest, args.toolkit_version)
     else:
         try:
             func = getattr(cutlass_generator, "GenerateSM" + arch)
-            func(manifest, args.cuda_version)
+            func(manifest, args.toolkit_version)
         except AttributeError as e:
             raise NotImplementedError(
                 "Arch " + arch + " is not supported by current cutlass lib."
@@ -281,25 +293,34 @@ def _gen_ops_cached(arch, version) -> dict[Any, Any]:
     return manifest.operations
 
 
-def gen_ops() -> dict[Any, Any]:
+def gen_ops(device_type: str) -> dict[Any, Any]:
     """
     Generates all supported CUTLASS operations.
     """
     with dynamo_timed("cutlass_utils.gen_ops"):
-        arch = get_cuda_arch()
-        version = get_cuda_version()
+        device_op_overrides = get_device_op_overrides(device_type)
+        arch = device_op_overrides.get_device_arch()
+        version = device_op_overrides.get_toolkit_version()
         return _gen_ops_cached(arch, version)
 
 
 from ..cpp_utils import DTYPE_TO_CPP
 
 
-DTYPE_TO_CUTLASS_TYPE = {
-    **DTYPE_TO_CPP,
-    torch.float16: "__half",
-    torch.bfloat16: "__nv_bfloat16",
-    torch.float8_e4m3fn: "__nv_fp8_e4m3",
-}
+if torch.xpu.is_available():
+    DTYPE_TO_CUTLASS_TYPE = {
+        **DTYPE_TO_CPP,
+        torch.float16: "uint16_t",
+        torch.bfloat16: "uint16_t",
+        torch.float8_e4m3fn: "uint8_t",
+    }
+else:
+    DTYPE_TO_CUTLASS_TYPE = {
+        **DTYPE_TO_CPP,
+        torch.float16: "__half",
+        torch.bfloat16: "__nv_bfloat16",
+        torch.float8_e4m3fn: "__nv_fp8_e4m3",
+    }
 
 
 @functools.lru_cache(32)
